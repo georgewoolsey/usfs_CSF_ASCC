@@ -1,0 +1,49 @@
+--- 
+title: "Colorado State Forest (CSF) Adaptive Silviculture for Climate Change (ASCC) Planning"
+author: "George Woolsey"
+date: "`r Sys.Date()`"
+site: bookdown::bookdown_site
+output: 
+  bookdown::gitbook:
+    includes:
+      in_header: header.html
+documentclass: book
+book_filename: "usfs_CSF_ASCC"
+output_dir: "../docs"
+language:
+  ui:
+    chapter_name: "Chapter "
+delete_merged_file: true
+bibliography: [packages.bib]
+biblio-style: apalike
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/research-institute-for-nature-and-forest.csl
+suppress-bibliography: false
+lang: en-US
+zotero: true
+link-citations: true
+description: "Using the bookdown package to write a book for CSF site ASCC project planning. The output format for this example is bookdown::gitbook."
+---
+
+# Objective
+
+The objective of this analysis is to describe the site conditions for the purpose of planning forest management activities at the Colorado State Forest ([CSF](https://csfs.colostate.edu/colorado-state-forest/)) site for the Adaptive Silviculture for Climate Change ([ASCC](https://www.adaptivesilviculture.org/)) project. This analysis quantifies the potential direct incident radiation and temperature at the site which will be utilized for planning the spatial arrangement of forest management treatments.
+
+```{r include=FALSE, echo=FALSE}
+knitr::write_bib(c(
+  .packages(),
+  'bookdown'
+  , 'knitr'
+  , 'rmarkdown'
+  , 'tidyverse'
+  , 'lubridate'
+  , 'scales'
+  , 'viridis'
+  , 'kableExtra'
+  , 'sf'
+  , 'stars'
+  , 'lwgeom'
+  , 'mapview'
+  , 'leafpop'
+  , 'terra'
+), 'packages.bib')
+```
