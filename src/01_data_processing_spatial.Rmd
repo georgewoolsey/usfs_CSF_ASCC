@@ -39,11 +39,11 @@ sf::sf_use_s2(FALSE)
 my_crs <- 5070 # EPSG:5070 = NAD83/Conus Albers (units = meters); EPSG:4326 = WGS 84 (units = dd); EPSG:4269 = NAD83 (units = dd)
 ```
 
-## Obtain Elevation Data
+## Explore Data
 
 The raster [elevation data](https://drive.google.com/drive/folders/1zpf4jUtbMu5shYyqqTMieX0oydI0SP6E?usp=sharing) sent by Mark Melham (Mark.Melham@colostate.edu) was in a geodatabase (.gdb). GDAL uses the OpenFileGDB driver, which can only read vector data sources ([here](https://gis.stackexchange.com/questions/267186/importing-raster-with-r-from-file-geodatabase)). Have to open .gdb in Arc and export as GeoTIFF (.tif).
 
-```{r, eval=FALSE}
+```{r raw-dta-ld}
 # read in elevation data exported from Arc as .tif
 elev_temp <- terra::rast("../data/ground_elev_reproj.tif")
 # check values
@@ -80,7 +80,7 @@ This elevation data is cropped to the unit boundaries. Need to get elevation ras
 
 Export treatment area bounding box to obtain USGS 3DEP 1m elevation data product.
 
-```{r, eval=FALSE}
+```{r expt-raw-dta}
 # set reproj crs
 reproject_crs <- terra::crs(elev_temp)
 # export
@@ -97,52 +97,75 @@ terra::ext(elev_temp) |>
 
 Upload this bounding box shape to Google Earth Engine and execute [this script](https://code.earthengine.google.com/5e48227107dfd5c23f1c5b678d142a4b?noload=true) to get full USGS 3DEP 1m elevation data.
 
+## Treatment Area
+
+I don't have the unit polygon data. Creating it from the boundary of the elevation raster which was cropped to the units.
+
+```{r trt-units}
+trt_units <- elev_temp |> 
+        terra::classify(rcl = (c(-Inf, Inf, 1) |> matrix(ncol=3, byrow=TRUE)) ) |> 
+        terra::as.polygons(trunc=TRUE, dissolve=TRUE) |> 
+        sf::st_as_sf() |> 
+        sf::st_set_crs(reproject_crs)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
+remove(list = ls()[grep("_temp",ls())])
+gc()
+```
+
 ## Load Elevation Data
 
 USGS 3DEP 1m resolution elevation data utilized for HLI calculation.
 
-```{r}
+```{r elev-ld}
 #######################################################
 #######################################################
 # read elevation data
 #######################################################
 #######################################################
-
-
-zzz <- terra::rast("../data/csf_ascc_3dep1m.tif")
-zzz |> 
-  as.data.frame(xy=T) |> 
-  rename(elev=3) |> 
-  ggplot() + geom_raster(mapping = aes(x=x,y=y,fill=elev))
-
+elev <- terra::rast("../data/csf_ascc_3dep1m.tif") |> 
+  terra::crop(
+    trt_units |> 
+      sf::st_buffer(150) |> 
+      sf::st_bbox() |> 
+      sf::st_as_sfc()
+  )
+# plot
 ggplot() +
   geom_raster(
     data =
-      zzz |>
+      elev |>
+        terra::aggregate(fact=10, fun="mean") |> 
         as.data.frame(xy=T) |>
         rename(elev=3)
     , mapping = aes(x=x,y=y,fill=elev)
   ) +
-  geom_sf(
-    data = 
-      xxx |> 
-        terra::classify(rcl = (c(-Inf, Inf, 1) %>% matrix(ncol=3, byrow=TRUE)) ) |> 
-        terra::as.polygons(trunc=TRUE, dissolve=TRUE) |> 
-        sf::st_as_sf() |> 
-        sf::st_set_crs(reproject_crs)
-    , alpha = 0, lwd = 1, color = "black"
-  ) +
-  scale_fill_viridis_c() +
-  theme_light()
-  
-    
-
+  geom_sf(data = trt_units, alpha = 0, lwd = 0.6, color = "black") +
+  scale_fill_viridis_c(option = "cividis", label = scales::comma) +
+    scale_x_continuous(expand = c(0.01, 0.01)) +
+    scale_y_continuous(expand = c(0.01, 0.01)) +
+    labs(
+      fill = "Elevation (m)"
+      , x = ""
+      , y = ""
+    ) +
+    theme_light() +
+    theme(
+      legend.position = "bottom"
+      , legend.direction = "horizontal"
+      , legend.margin = margin(0,0,0,0)
+      , legend.box.margin = margin(-7,0,2,0)
+      , legend.text = element_text(size = 7, angle = 25, hjust = 0.7)
+      , legend.title = element_text(size = 7)
+      , axis.title = element_text(size = 7)
+      , plot.subtitle = element_text(size=9)
+    )
 ```
 
 ```{r, echo=FALSE, include=FALSE}
 gc()
 ```
-
 
 ## Aspect and HLI{#hli}
 
@@ -161,18 +184,19 @@ $$
 \textrm{Folded aspect°} = 180° \, - \, | Aspect° – 180° |
 $$
 
-```{r}
-if(file.exists("../data/topo.RDS") == TRUE & overwrite_it == FALSE){
-  topo <- readRDS("../data/topo.RDS")
-}else{
+```{r topo-stars}
+# convert elevation raster from terra to stars
+elev_stars <- stars::st_as_stars(elev) |> 
+  setNames(c("elev"))
 # extract latitude degrees from stars object
-lats <- sf::st_coordinates(elev_small) %>%
-  sf::st_as_sf(coords = c("x", "y"), crs = my_crs) %>%
-  sf::st_transform(crs = 4326) %>%
-  sf::st_coordinates() %>%
-  dplyr::as_tibble() %>%
-  setNames(c("longitude","latitude")) %>%
+lats <- sf::st_coordinates(elev_stars) |>
+  sf::st_as_sf(coords = c("x", "y"), crs = my_crs) |>
+  sf::st_transform(crs = 4326) |>
+  sf::st_coordinates() |>
+  dplyr::as_tibble() |>
+  setNames(c("longitude","latitude")) |>
   dplyr::select(latitude)
+gc()
 # hli function
   # This equation returns ln(Rad, MJ · cm–2 · yr–1). It can
   # be returned to an arithmetic scale with the EXP(x)
@@ -189,13 +213,13 @@ hli_fn <- function(slope_rad, folded_aspect_rad, latitude_rad){
 
 # calculate slope and aspect from DEM
 topo <- c(
-    elev_small
-    , starsExtra::slope(elev_small)
-    , starsExtra::aspect(elev_small)
-  ) %>% 
+    elev_stars
+    , starsExtra::slope(elev_stars)
+    , starsExtra::aspect(elev_stars)
+  ) |> 
   setNames(
     c("elev", "slope_deg", "aspect_deg")
-  ) %>% 
+  ) |> 
   dplyr::mutate(
     slope_rad = pracma::deg2rad(as.numeric(slope_deg))
     , aspect_rad = pracma::deg2rad(as.numeric(aspect_deg))
@@ -209,19 +233,17 @@ topo <- c(
         , TRUE ~ hli_fn(slope_rad, folded_aspect_rad, latitude_rad)
       )
   )
-}
-```
 
+```
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
 remove(list = ls()[grep("temp_",ls())])
 gc()
 ```
 
-
 ### Topography maps
 
-```{r, eval=TRUE}
+```{r topo-maps}
 # map
 vars <- c(
   "elev"
@@ -238,8 +260,8 @@ vars_title <- c(
   , "Heat Load Index (HLI)"
 )
 vars_color <- c(
-  "viridis"
-  , "cividis"
+  "cividis"
+  , "viridis"
   , "inferno"
   , "plasma"
   , "turbo"
@@ -262,36 +284,35 @@ vars_ulim <- c(
 plt_fn <- function(x){
   (
       ggplot() + 
-      stars::geom_stars(data = (topo %>% dplyr::select(vars[x]))[]) +
+      stars::geom_stars(data = (topo |> dplyr::select(vars[x]))[]) +
       scale_fill_viridis_c(option = vars_color[x], alpha = 0.9, na.value = "transparent"
           , limits = c(vars_llim[x], vars_ulim[x])
+          , label = scales::comma
       ) +
-      geom_sf(data = units, alpha = 0, lwd = 1, color = "black") +
+      geom_sf(data = trt_units, alpha = 0, lwd = 0.6, color = "black") +
       labs(
-          title = vars_title[x]
+          subtitle = vars_title[x]
           , fill = vars_title[x]
+          , x = ""
+          , y = ""
         ) +
-      xlab("") +
-      ylab("") +
       scale_x_continuous(expand = c(0, 0)) +
       scale_y_continuous(expand = c(0, 0)) +
-      theme_bw() +
+      theme_light() +
       theme(
         legend.position = "bottom"
         , legend.direction = "horizontal"
         , legend.margin = margin(0,0,0,0)
-        , legend.text = element_text(size = 7)
+        , legend.box.margin = margin(-7,0,2,0)
+        , legend.text = element_text(size = 7, angle = 25, hjust = 0.7)
         , legend.title = element_text(size = 7)
-        , axis.text.y = element_text(size = 7)
-        , axis.text.x = element_text(size = 7, angle = 35, hjust = 0.7)
-        , panel.border = element_blank()
-      ) 
+        , axis.title = element_text(size = 7)
+        , plot.subtitle = element_text(size=9)
+      )
   )
 }
-
-# combine plots
-# cowplot::plot_grid(plotlist =  plts, ncol = 2)
-c(1:length(vars)) %>%
+# print all plots
+c(1:length(vars)) |>
   purrr::map(plt_fn)
 ```
 
@@ -306,27 +327,27 @@ if(file.exists("../data/all_groups_topo.gpkg") == TRUE & overwrite_it == FALSE){
   # functions to aggregate raster data to vector data
   topo_calc_fn <- function(dta){
     # calculate median aspect and slope by vector
-    temp_slope <- aggregate(topo %>% dplyr::select(slope_rad), dta, median)  %>% 
-      dplyr::as_tibble() %>%
+    temp_slope <- aggregate(topo |> dplyr::select(slope_rad), dta, median)  |> 
+      dplyr::as_tibble() |>
       dplyr::select(slope_rad)
-    temp_aspect <- aggregate(topo %>% dplyr::select(aspect_rad), dta, median)  %>% 
-      dplyr::as_tibble() %>%
+    temp_aspect <- aggregate(topo |> dplyr::select(aspect_rad), dta, median)  |> 
+      dplyr::as_tibble() |>
       dplyr::select(aspect_rad)
-    temp_folded_aspect <- aggregate(topo %>% dplyr::select(folded_aspect_rad), dta, median) %>% 
-      dplyr::as_tibble() %>%
+    temp_folded_aspect <- aggregate(topo |> dplyr::select(folded_aspect_rad), dta, median) |> 
+      dplyr::as_tibble() |>
       dplyr::select(folded_aspect_rad)
-    temp_hli <- aggregate(topo %>% dplyr::select(hli), dta, median) %>% 
-      dplyr::as_tibble() %>%
+    temp_hli <- aggregate(topo |> dplyr::select(hli), dta, median) |> 
+      dplyr::as_tibble() |>
       dplyr::select(hli)
     # vector center
-    temp_center <- sf::st_centroid(dta)$geometry %>% 
-      sf::st_transform(crs = 4326) %>% 
-      sf::st_coordinates() %>% 
-      dplyr::as_tibble() %>% 
-      setNames(c("longitude","latitude")) %>%
+    temp_center <- sf::st_centroid(dta)$geometry |> 
+      sf::st_transform(crs = 4326) |> 
+      sf::st_coordinates() |> 
+      dplyr::as_tibble() |> 
+      setNames(c("longitude","latitude")) |>
       dplyr::select(latitude)
     # attach to input data
-    new_dta <- dta %>% 
+    new_dta <- dta |> 
       dplyr::mutate(
         # radians
         slope_rad = temp_slope$slope_rad
@@ -344,7 +365,7 @@ if(file.exists("../data/all_groups_topo.gpkg") == TRUE & overwrite_it == FALSE){
     return(new_dta)
   }
   # apply to data
-  all_groups_topo <- all_groups %>% topo_calc_fn()
+  all_groups_topo <- all_groups |> topo_calc_fn()
 }
 ```
 
@@ -363,7 +384,7 @@ if(overwrite_it == FALSE){
 }else{
   # write data
   sf::st_write(all_groups_topo, "../data/all_groups_topo.gpkg", append = FALSE)
-  sf::st_write(units, "../data/units.gpkg", append = FALSE)
+  sf::st_write(trt_units, "../data/units.gpkg", append = FALSE)
   stars::write_stars(topo, "../data/topo.tif", append = FALSE)
   saveRDS(topo, "../data/topo.RDS", compress = TRUE)
 }
