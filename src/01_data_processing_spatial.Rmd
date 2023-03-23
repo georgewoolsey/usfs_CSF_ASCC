@@ -54,7 +54,7 @@ elev_temp <- elev_temp/3.2808
 elev_temp |> 
   terra::aggregate(fact=10, fun="mean") |> 
   as.data.frame(xy=T) |> 
-  rename(elevation=3) |> 
+  dplyr::rename(elevation=3) |> 
   ggplot() +
     geom_tile(mapping = aes(x=x,y=y,fill=elevation)) +
     scale_fill_viridis_c(option = "cividis", label = scales::comma) +
@@ -138,7 +138,7 @@ ggplot() +
       elev |>
         terra::aggregate(fact=10, fun="mean") |> 
         as.data.frame(xy=T) |>
-        rename(elev=3)
+        dplyr::rename(elev=3)
     , mapping = aes(x=x,y=y,fill=elev)
   ) +
   geom_sf(data = trt_units, alpha = 0, lwd = 0.6, color = "black") +
@@ -316,59 +316,159 @@ c(1:length(vars)) |>
   purrr::map(plt_fn)
 ```
 
-## Attach topography and HLI to groups
-
-Each group will be assigned the median value of HLI within the group boundary.
-
-```{r}
-if(file.exists("../data/all_groups_topo.gpkg") == TRUE & overwrite_it == FALSE){
-  all_groups_topo <- sf::st_read("../data/all_groups_topo.gpkg")
-}else{
-  # functions to aggregate raster data to vector data
-  topo_calc_fn <- function(dta){
-    # calculate median aspect and slope by vector
-    temp_slope <- aggregate(topo |> dplyr::select(slope_rad), dta, median)  |> 
-      dplyr::as_tibble() |>
-      dplyr::select(slope_rad)
-    temp_aspect <- aggregate(topo |> dplyr::select(aspect_rad), dta, median)  |> 
-      dplyr::as_tibble() |>
-      dplyr::select(aspect_rad)
-    temp_folded_aspect <- aggregate(topo |> dplyr::select(folded_aspect_rad), dta, median) |> 
-      dplyr::as_tibble() |>
-      dplyr::select(folded_aspect_rad)
-    temp_hli <- aggregate(topo |> dplyr::select(hli), dta, median) |> 
-      dplyr::as_tibble() |>
-      dplyr::select(hli)
-    # vector center
-    temp_center <- sf::st_centroid(dta)$geometry |> 
-      sf::st_transform(crs = 4326) |> 
-      sf::st_coordinates() |> 
-      dplyr::as_tibble() |> 
-      setNames(c("longitude","latitude")) |>
-      dplyr::select(latitude)
-    # attach to input data
-    new_dta <- dta |> 
-      dplyr::mutate(
-        # radians
-        slope_rad = temp_slope$slope_rad
-        , aspect_rad = temp_aspect$aspect_rad
-        , folded_aspect_rad = temp_folded_aspect$folded_aspect_rad
-        , latitude_rad = pracma::deg2rad(as.numeric(temp_center$latitude))
-        # degrees
-        , slope_deg = pracma::rad2deg(temp_slope$slope_rad)
-        , aspect_deg = pracma::rad2deg(temp_aspect$aspect_rad)
-        , folded_aspect_deg = pracma::rad2deg(temp_folded_aspect$folded_aspect_rad)
-        , latitude_deg = as.numeric(temp_center$latitude)
-        # hli
-        , hli = temp_hli$hli
-      )
-    return(new_dta)
-  }
-  # apply to data
-  all_groups_topo <- all_groups |> topo_calc_fn()
-}
+```{r, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
+remove(list = ls()[grep("temp_",ls())])
+gc()
 ```
 
+## HLI at different resolutions
+
+Aggregate HLI to different resolutions for use in selecting areas 
+
+```{r}
+# create output dir
+if(!dir.exists("../data/output/")){
+  dir.create("../data/output/")
+}
+# function to map and output data
+hli_agg_fn <- function(my_res = 50) {
+  # base hli data and aggregate
+  hli <- terra::rast((topo |> dplyr::select(hli))[]) |> 
+    terra::aggregate(fact=my_res, fun="mean")
+  # define quartile cuts
+  cuts_list <- c(.25, .5, .75)
+  class_list <- c("Coolest", "Med. Cool", "Med. Warm", "Warmest")
+  qrtl_cuts <- terra::global(hli, fun = quantile, probs = cuts_list, na.rm = T) |> as.numeric()
+  # create matrix to reclassify cells based on quartile
+    ## from-to-becomes
+      # classify the values into three groups 
+      # all values >= 0 and <= 0.25 become 1, etc.
+  rclmat_temp <- c(
+      0, qrtl_cuts[1], 1
+      , qrtl_cuts[1], qrtl_cuts[2], 2
+      , qrtl_cuts[2], qrtl_cuts[3], 3
+      , qrtl_cuts[3], Inf, 4
+    ) |> 
+    matrix(ncol=3, byrow=TRUE)
+  # create raster with qrtl grps
+  hli_qrtl <- hli |> 
+    terra::classify(rclmat_temp, include.lowest=TRUE)
+  # plot
+  plt_map <- hli_qrtl |> 
+    as.data.frame(xy=T) |> 
+    dplyr::rename(hli=3) |> 
+    dplyr::mutate(
+      hli = factor(
+        hli
+        , labels = class_list
+        , ordered = T
+    )) |> 
+    ggplot() +
+      geom_raster(mapping = aes(x=x,y=y,fill=hli)) +
+      scale_fill_viridis_d(option = "turbo", alpha = 0.9, na.value = "transparent") +
+      geom_sf(data = trt_units, alpha = 0, lwd = 0.6, color = "black") +
+      labs(
+          subtitle = paste0("Cell Size Resolution = ", my_res, "m x ", my_res, "m")
+          , fill = ""
+          , x = ""
+          , y = ""
+        ) +
+      scale_x_continuous(expand = c(0, 0)) +
+      scale_y_continuous(expand = c(0, 0)) +
+      theme_light() +
+      theme(
+        legend.position = "bottom"
+        , legend.direction = "horizontal"
+        , legend.margin = margin(0,0,0,0)
+        , legend.box.margin = margin(-7,0,2,0)
+        , legend.text = element_text(size = 7)
+        , legend.title = element_text(size = 7)
+        , axis.title = element_text(size = 7)
+        , plot.subtitle = element_text(size=9)
+      )
+  # plot histogram
+  plt_hist <- dplyr::left_join(
+      x = hli |> as.data.frame(xy = T) |> dplyr::rename(hli=3)
+      , y = hli_qrtl |> as.data.frame(xy = T) |> dplyr::rename(hli_qrtl=3)
+      , by = dplyr::join_by(x,y)
+    ) |> 
+      dplyr::mutate(
+        hli_qrtl = factor(
+          hli_qrtl
+          , labels = class_list
+          , ordered = T
+      )) |>
+    ggplot() +
+      geom_vline(xintercept = qrtl_cuts, color = "gray65", lwd = 0.5, linetype = "dashed") +
+      geom_density(
+          mapping = aes(x = hli, fill = hli_qrtl)
+          , color = NA
+        ) + 
+        facet_grid(hli_qrtl~.) +
+        scale_fill_viridis_d(option = "turbo", alpha = 0.95) +
+        scale_x_continuous(
+          limits = c(
+            max(
+              median(topo$hli, na.rm = T)-sd(topo$hli, na.rm = T)*2.5
+              , 0
+            )
+            ,1.01
+          )
+          , breaks = scales::extended_breaks(n=10)
+        ) +
+        labs(
+          subtitle = paste0("Cell Size Resolution = ", my_res, "m x ", my_res, "m")
+          # subtitle = "HLI distribution by cool-warm site type"
+          , x = "HLI"
+          , y = "Density"
+        ) +
+        theme_bw() + 
+        theme(
+          legend.position = "top"
+          , legend.title = element_blank()
+          , axis.text.y = element_text(size = 7)
+          , axis.text.x = element_text(size = 7, angle = 35, hjust = 0.7)
+          , panel.border = element_blank()
+          , plot.subtitle = element_text(size=9)
+        )
+  # write
+  terra::writeRaster(x = hli_qrtl, filename = paste0("../data/output/hli_qrtl_", my_res, "m.tif"), overwrite = T)
+  terra::writeRaster(x = hli, filename = paste0("../data/output/hli_", my_res, "m.tif"), overwrite = T)
+  # combine plots
+  # print(plt_hist)
+  # print(plt_map)
+  return(list(plt_hist,plt_map))
+}
+# call function with different resolutions
+res_list <- c(10,25,50,100)
+plt_list <- res_list |> 
+  purrr::map(hli_agg_fn)
+```
+
+### HLI Distributions
+
+Distribution by cool-warm site type at different cell size resolutions
+
+```{r}
+# plot histograms
+c(1:length(res_list)) |>
+  purrr::map(
+    function(x){plt_list[[x]][[1]]}
+  )
+```
+
+### HLI Maps
+
+Maps by cool-warm site type at different cell size resolutions
+
+```{r}
+# plot maps
+c(1:length(res_list)) |>
+  purrr::map(
+    function(x){plt_list[[x]][[2]]}
+  )
+
+```
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
 remove(list = ls()[grep("temp_",ls())])
@@ -376,17 +476,88 @@ gc()
 ```
 
 
-## Save Data
+```{r, include=FALSE, eval=FALSE}
+hli |> 
+  terra::aggregate(fact=50, fun="mean") |> 
+  as.data.frame(xy=T) |> 
+  dplyr::rename(hli=3) |> 
+  ggplot() +
+    geom_raster(mapping = aes(x=x,y=y,fill=hli)) +
+    scale_fill_viridis_c(option = "turbo", alpha = 0.9, na.value = "transparent"
+          , limits = c(0, 1)
+          , label = scales::comma
+      ) +
+      geom_sf(data = trt_units, alpha = 0, lwd = 0.6, color = "black") +
+      labs(
+          subtitle = "HLI"
+          , fill = "HLI"
+          , x = ""
+          , y = ""
+        ) +
+      scale_x_continuous(expand = c(0, 0)) +
+      scale_y_continuous(expand = c(0, 0)) +
+      theme_light() +
+      theme(
+        legend.position = "bottom"
+        , legend.direction = "horizontal"
+        , legend.margin = margin(0,0,0,0)
+        , legend.box.margin = margin(-7,0,2,0)
+        , legend.text = element_text(size = 7, angle = 25, hjust = 0.7)
+        , legend.title = element_text(size = 7)
+        , axis.title = element_text(size = 7)
+        , plot.subtitle = element_text(size=9)
+      )
+```
 
-```{r}
-if(overwrite_it == FALSE){
-  print("Proceeding to next section without processing or overwriting data...")
-}else{
-  # write data
-  sf::st_write(all_groups_topo, "../data/all_groups_topo.gpkg", append = FALSE)
-  sf::st_write(trt_units, "../data/units.gpkg", append = FALSE)
-  stars::write_stars(topo, "../data/topo.tif", append = FALSE)
-  saveRDS(topo, "../data/topo.RDS", compress = TRUE)
-}
+
+```{r, include=FALSE, eval=FALSE}
+# convert the raster to vecor/matrix
+hli_10m <- hli |> terra::aggregate(fact=10, fun="mean")
+hli_mtrx <- values(hli_10m)
+# str(hli_mtrx)
+# It is important to set the seed generator because `kmeans` initiates the centers in random locations
+set.seed(11)
+# We want to create 10 clusters, allow 500 iterations, start with 5 random sets using "Lloyd" method
+kmncluster <- kmeans(
+  x = na.omit(hli_mtrx)
+  , centers = 4 # number of clusters
+  , iter.max = 500
+  , nstart = 5 # how many random sets should be chosen
+  , algorithm = "Lloyd"
+)
+# kmeans returns an object of class "kmeans"
+str(kmncluster)
+# Use the hli object to set the cluster values to a new raster
+hli_kmncluster <- hli_10m
+values(hli_kmncluster) <- kmncluster$cluster
+hli_kmncluster |> terra::freq()
+
+hli_kmncluster |> 
+  as.data.frame(xy=T) |> 
+  dplyr::rename(hli_cluster=3) |> 
+  dplyr::mutate(hli_cluster = as.factor(hli_cluster)) |> 
+  ggplot() +
+    geom_raster(mapping = aes(x=x,y=y,fill=hli_cluster)) +
+    scale_fill_viridis_d(option = "turbo", alpha = 0.9, na.value = "transparent") +
+    geom_sf(data = trt_units, alpha = 0, lwd = 0.6, color = "black") +
+    labs(
+        subtitle = "HLI"
+        , fill = "HLI"
+        , x = ""
+        , y = ""
+      ) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_light() +
+    theme(
+      legend.position = "bottom"
+      , legend.direction = "horizontal"
+      , legend.margin = margin(0,0,0,0)
+      , legend.box.margin = margin(-7,0,2,0)
+      , legend.text = element_text(size = 7, angle = 25, hjust = 0.7)
+      , legend.title = element_text(size = 7)
+      , axis.title = element_text(size = 7)
+      , plot.subtitle = element_text(size=9)
+    )
 ```
 

@@ -5,3 +5,6 @@ treatment-area
 load-elevation-data
 hli
 topography-maps
+hli-at-different-resolutions
+hli-distributions
+hli-maps
